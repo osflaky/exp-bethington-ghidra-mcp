@@ -1,0 +1,219 @@
+name: Tests
+
+on:
+  workflow_dispatch:
+
+# OSSF Scorecard Token-Permissions: default to read-only so any job
+# without an explicit permissions block can only read repo contents.
+# Codecov upload (java-build job) and any future job needing write
+# scopes must add their own job-level permissions block.
+permissions:
+  contents: read
+
+jobs:
+  java-build:
+    name: Java Build (Maven) [${{ matrix.expander_leg }}]
+    runs-on: ${{ matrix.runner }}
+    # Every step below is bash (line continuations, find, shopt, <<<). Windows
+    # runners default to PowerShell, so pin bash (Git Bash on Windows) for all legs.
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - java-version: 21
+          os: macos-latest
+          arch: arm64
+          runner: macos-latest
+          expander_leg: macos-latest-21-arm64
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v4
+
+    - name: Set up Java
+      uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c  # v6.0.0
+      with:
+        java-version: ${{ matrix.java-version }}
+        distribution: 'temurin'
+        cache: maven
+
+    - name: Cache Ghidra installation
+      id: cache-ghidra
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        # runner.temp is the same directory for the cache action and for bash
+        # ($RUNNER_TEMP) on every OS; /tmp is not (D:\tmp vs Git Bash's /tmp on Windows).
+        path: ${{ runner.temp }}/ghidra
+        key: ghidra-12.1.2-PUBLIC-20260605
+
+    - name: Download Ghidra
+      if: steps.cache-ghidra.outputs.cache-hit != 'true'
+      run: |
+        # Forward slashes so the same path works for bash tools and for Java on Windows.
+        GHIDRA_ROOT="${RUNNER_TEMP//\\//}/ghidra"
+        echo "Downloading Ghidra 12.1.2..."
+        curl -sL -o "${RUNNER_TEMP//\\//}/ghidra.zip" \
+          "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.2_build/ghidra_12.1.2_PUBLIC_20260605.zip"
+        mkdir -p "$GHIDRA_ROOT"
+        unzip -q "${RUNNER_TEMP//\\//}/ghidra.zip" -d "$GHIDRA_ROOT"
+        rm "${RUNNER_TEMP//\\//}/ghidra.zip"
+
+    - name: Install Ghidra JARs to Maven local repository
+      run: |
+        GHIDRA_ROOT="${RUNNER_TEMP//\\//}/ghidra"
+        GHIDRA_DIR=$(find "$GHIDRA_ROOT" -maxdepth 1 -type d -name 'ghidra_*' | head -1)
+        GHIDRA_VERSION="12.1.2"
+        echo "Using Ghidra directory: $GHIDRA_DIR"
+
+        # Install Framework JARs
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Framework/Generic/lib/Generic.jar" \
+            -DgroupId=ghidra -DartifactId=Generic -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Framework/SoftwareModeling/lib/SoftwareModeling.jar" \
+            -DgroupId=ghidra -DartifactId=SoftwareModeling -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Framework/Project/lib/Project.jar" \
+            -DgroupId=ghidra -DartifactId=Project -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Framework/Docking/lib/Docking.jar" \
+            -DgroupId=ghidra -DartifactId=Docking -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Framework/Utility/lib/Utility.jar" \
+            -DgroupId=ghidra -DartifactId=Utility -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Framework/Gui/lib/Gui.jar" \
+            -DgroupId=ghidra -DartifactId=Gui -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Framework/FileSystem/lib/FileSystem.jar" \
+            -DgroupId=ghidra -DartifactId=FileSystem -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Framework/Graph/lib/Graph.jar" \
+            -DgroupId=ghidra -DartifactId=Graph -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Framework/DB/lib/DB.jar" \
+            -DgroupId=ghidra -DartifactId=DB -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Framework/Emulation/lib/Emulation.jar" \
+            -DgroupId=ghidra -DartifactId=Emulation -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Framework/Help/lib/Help.jar" \
+            -DgroupId=ghidra -DartifactId=Help -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+
+        # Install Debugger JARs (for DebuggerService, v5.4.0+)
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Debug/Debugger-api/lib/Debugger-api.jar" \
+            -DgroupId=ghidra -DartifactId=Debugger-api -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Debug/Framework-TraceModeling/lib/Framework-TraceModeling.jar" \
+            -DgroupId=ghidra -DartifactId=Framework-TraceModeling -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Debug/Debugger-rmi-trace/lib/Debugger-rmi-trace.jar" \
+            -DgroupId=ghidra -DartifactId=Debugger-rmi-trace -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+
+        # Install Feature JARs
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Features/Base/lib/Base.jar" \
+            -DgroupId=ghidra -DartifactId=Base -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Features/Decompiler/lib/Decompiler.jar" \
+            -DgroupId=ghidra -DartifactId=Decompiler -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Features/PDB/lib/PDB.jar" \
+            -DgroupId=ghidra -DartifactId=PDB -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+        mvn -q install:install-file -Dfile="$GHIDRA_DIR/Ghidra/Features/FunctionID/lib/FunctionID.jar" \
+            -DgroupId=ghidra -DartifactId=FunctionID -Dversion=$GHIDRA_VERSION -Dpackaging=jar
+
+        echo "✅ Installed Ghidra JARs to Maven local repository"
+
+        # Publish the resolved path for the real-Ghidra test step below. Deliberately
+        # NOT named GHIDRA_INSTALL_DIR: that variable activates the pom's
+        # `ghidra-runtime-tests` profile and un-skips the real-Ghidra tier, and the
+        # offline step immediately after this one must stay offline.
+        echo "GHIDRA_DIR=$GHIDRA_DIR" >> "$GITHUB_ENV"
+
+    - name: Build with Maven
+      run: mvn clean package assembly:single -q -DskipTests
+
+    - name: Run offline Java tests
+      run: |
+        # Annotation-scanner, endpoints.json parity, and mock-based unit tests
+        # (e.g. ServiceUtilsAddressTest) — pure reflection / static checks, no Ghidra
+        # server. The true integration tests (GhidraMCPPluginTest,
+        # EndpointRegistrationTest, AppTest) require a running Ghidra instance and are
+        # excluded from this run.
+        #
+        # com.xebyte.core is included too: those are Mockito tests that need no
+        # server either, and they cover the no-return + flow-repair behavior
+        # (#384/#385). Matching only com.xebyte.offline meant they never ran in CI
+        # at all.
+        #
+        # GHIDRA_INSTALL_DIR is deliberately NOT set for THIS step, so the
+        # *GhidraTest classes self-skip via assumeTrue and the coverage ratchet keeps
+        # measuring the same offline tier it has always measured. The real-Ghidra
+        # tier runs in its own step below.
+        mvn -q test -Pcoverage-gate -Dtest='com.xebyte.offline.*Test,com.xebyte.core.*Test'
+
+    - name: Run real-Ghidra Java tests
+      # src/test/java/com/xebyte/core/*GhidraTest.java builds a REAL ProgramDB through
+      # ghidra.program.database.ProgramBuilder and exercises actual disassembly and
+      # flow-override repair -- behavior no mock reproduces.
+      #
+      # Until 2026-08-31 this tier had never run anywhere. With GHIDRA_INSTALL_DIR set it
+      # died in @Before with NoClassDefFoundError, because Ghidra bundles a dozen libraries
+      # that the `install-file`d module jars record no dependency on; with it unset every
+      # test self-skipped through assumeTrue. CI took the second branch, so the suite was
+      # green while testing nothing. The pom's `ghidra-runtime-tests` profile -- which this
+      # variable activates -- supplies the missing jars.
+      #
+      # Ghidra is already downloaded and unzipped above, so the marginal cost here is the
+      # test time alone. Verified headless on Linux with no DISPLAY before being enabled.
+      env:
+        GHIDRA_INSTALL_DIR: ${{ env.GHIDRA_DIR }}
+      run: |
+        # jacoco is skipped so this run does not overwrite the offline-tier coverage report
+        # that the upload step publishes, and so the ratchet keeps its original meaning.
+        mvn -q test -Djacoco.skip=true -Dtest='com.xebyte.core.*GhidraTest'
+
+        # A green `mvn test` is NOT proof the tier ran: assumeTrue reports skips as success,
+        # which is precisely how this tier stayed dead for so long. Assert on the counts.
+        shopt -s nullglob
+        reports=(target/surefire-reports/TEST-com.xebyte.core.*GhidraTest.xml)
+        if [ ${#reports[@]} -eq 0 ]; then
+          echo "::error::No real-Ghidra surefire report was produced - the tier did not run."
+          exit 1
+        fi
+        total=0
+        skipped=0
+        for report in "${reports[@]}"; do
+          header=$(grep -m1 '<testsuite' "$report")
+          count=$(sed -n 's/.* tests="\([0-9]*\)".*/\1/p' <<<"$header")
+          missed=$(sed -n 's/.* skipped="\([0-9]*\)".*/\1/p' <<<"$header")
+          total=$(( total + ${count:-0} ))
+          skipped=$(( skipped + ${missed:-0} ))
+        done
+        echo "real-Ghidra tier: ${total} test(s) run, ${skipped} skipped"
+        if [ "$total" -eq 0 ] || [ "$skipped" -ne 0 ]; then
+          echo "::error::The real-Ghidra tier skipped ${skipped} of ${total} tests. GHIDRA_INSTALL_DIR is set for this step on purpose; a skip here means it is testing nothing."
+          exit 1
+        fi
+
+    - name: Verify build artifacts
+      run: |
+        echo "✅ Java compilation + offline tests passed"
+        ls -la target/GhidraMCP-*.zip 2>/dev/null || echo "No zip artifact (assembly may use different name)"
+        ls -la target/*.jar 2>/dev/null | head -5
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      with:
+        name: java-test-results
+        path: target/surefire-reports/
+
+    - name: Upload JaCoCo coverage report
+      # Offline-tier Java coverage. The -Pcoverage-gate profile on the test step
+      # above enforces the ratchet (pom.xml); this artifact is for inspecting
+      # where the gaps are — open target/site/jacoco/index.html.
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      with:
+        name: jacoco-coverage-report
+        path: target/site/jacoco/
+        if-no-files-found: warn
+
+    # Absorbs the former build.yml: publish the packaged extension zip so the build
+    # artifact stays available without a second workflow re-downloading Ghidra + rebuilding.
+    - name: Upload build artifact
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      with:
+        name: GhidraMCP-artifact
+        path: target/GhidraMCP-*.zip
+        if-no-files-found: warn
+
+    timeout-minutes: 150
